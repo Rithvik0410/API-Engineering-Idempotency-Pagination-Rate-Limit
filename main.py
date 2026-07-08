@@ -1,7 +1,6 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from collections import defaultdict, deque
 import time
 import uuid
@@ -11,11 +10,11 @@ EMAIL = "22f3001101@ds.study.iitm.ac.in"
 
 TOTAL_ORDERS = 42
 RATE_LIMIT = 17
-WINDOW = 10  # seconds
+WINDOW = 10
 
 app = FastAPI()
 
-# Allow browser-based grader
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,14 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------------------
-# Rate Limiting
-# -------------------------------
+# ---------------- Rate Limiter ----------------
+
 clients = defaultdict(deque)
 
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
+    # Never rate-limit preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     client = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
@@ -44,8 +46,8 @@ async def rate_limit(request: Request, call_next):
         retry_after = max(1, int(WINDOW - (now - q[0])))
         return JSONResponse(
             status_code=429,
-            content={"detail": "Rate limit exceeded"},
             headers={"Retry-After": str(retry_after)},
+            content={"detail": "Rate limit exceeded"},
         )
 
     q.append(now)
@@ -53,18 +55,16 @@ async def rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
-# -------------------------------
-# Idempotent POST
-# -------------------------------
+# ---------------- Idempotent Orders ----------------
+
 orders_by_key = {}
 
 
-class Order(BaseModel):
-    item: str = "default-item"
-
-
 @app.post("/orders", status_code=201)
-def create_order(order: Order, request: Request):
+async def create_order(
+    request: Request,
+    body: dict = Body(default={}),
+):
     key = request.headers.get("Idempotency-Key")
 
     if not key:
@@ -74,27 +74,36 @@ def create_order(order: Order, request: Request):
         )
 
     if key in orders_by_key:
-        return orders_by_key[key]
+        return JSONResponse(
+            status_code=201,
+            content=orders_by_key[key],
+        )
 
-    new_order = {
-        "id": str(uuid.uuid4()),
-        "item": order.item,
-    }
+    order = {"id": str(uuid.uuid4()), **body}
 
-    orders_by_key[key] = new_order
+    orders_by_key[key] = order
 
-    return new_order
+    return JSONResponse(
+        status_code=201,
+        content=order,
+    )
 
 
-# -------------------------------
-# Cursor Pagination
-# -------------------------------
+# ---------------- Pagination ----------------
+
+
 @app.get("/orders")
-def list_orders(limit: int = 10, cursor: str | None = None):
+async def list_orders(limit: int = 10, cursor: str | None = None):
+    if limit < 1:
+        limit = 1
+
     start = 1
 
     if cursor:
-        start = int(base64.b64decode(cursor).decode())
+        try:
+            start = int(base64.b64decode(cursor).decode())
+        except Exception:
+            start = 1
 
     end = min(start + limit - 1, TOTAL_ORDERS)
 
@@ -108,3 +117,8 @@ def list_orders(limit: int = 10, cursor: str | None = None):
         "items": items,
         "next_cursor": next_cursor,
     }
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
