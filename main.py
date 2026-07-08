@@ -18,7 +18,7 @@ app = FastAPI()
 # Allow browser-based grader
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*",
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
